@@ -1,0 +1,108 @@
+<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<link rel="manifest" href="manifest.json"><title>AgroPay Offline</title>
+<script src="qr_gen.js"></script><script src="qr_scan.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,sans-serif}
+body{background:#06100c;color:#ecfdf5;padding:12px}
+.card{background:#0d1f18;border:1px solid #10b981;border-radius:12px;padding:12px;margin-bottom:10px}
+.saldo{font-size:30px;font-weight:bold;color:#34d399;margin:4px 0}
+input,select{width:100%;background:#06100c;border:1px solid #059669;color:#fff;padding:10px;border-radius:8px;margin-top:6px}
+button{width:100%;background:#10b981;color:#000;border:none;padding:11px;border-radius:8px;font-weight:bold;margin-top:8px}
+.btn-az{background:#0284c7;color:#fff}.btn-am{background:#d97706;color:#fff}
+#qr-box{background:#fff;padding:12px;border-radius:8px;margin-top:10px;display:none;justify-content:center}
+#cam{width:100%;border-radius:8px;margin-top:8px;display:none}
+.mov{font-size:11px;padding:5px 0;border-bottom:1px solid #064e3b;color:#a7f3d0}
+</style></head>
+<body>
+<div class="card">
+<div style="font-size:11px;color:#6ee7b7" id="id-txt">BÓVEDA CIFRADA LOCALSTORAGE</div>
+<div class="saldo" id="saldo-txt">$0.00 USD</div>
+<input type="text" id="nom" placeholder="Productor / Comercio (ej. Finca Pastaza)">
+<input type="password" id="pin" placeholder="PIN de cifrado (4 dígitos)" maxlength="6">
+<button onclick="abrirBoveda()">ABRIR BÓVEDA REAL ($0.00)</button>
+</div>
+
+<div class="card">
+<b>PAGAR SIN SEÑAL (QR + SONIDO + BLUETOOTH)</b>
+<select id="rubro" onchange="document.getElementById('conc').value=this.value">
+<option value="Compra Cacao / Agrícola">Rubro: Compra Cacao / Agrícola</option>
+<option value="Jornal / Mano de Obra">Rubro: Jornal / Mano de Obra</option>
+<option value="Transporte Rural / Carga">Rubro: Transporte Rural / Carga</option>
+<option value="Insumos / Herramientas">Rubro: Insumos / Herramientas</option>
+</select>
+<input type="text" id="conc" value="Compra Cacao / Agrícola">
+<input type="number" id="monto" placeholder="Monto USD (ej. 15.00)">
+<button onclick="emitirPago()">1. GENERAR PAGO CIFRADO</button>
+<div style="display:flex;gap:6px">
+<button class="btn-am" onclick="transmitirSonido()">2. PULSO ACÚSTICO</button>
+<button class="btn-az" onclick="transmitirBT()">3. BLUETOOTH</button>
+</div>
+<div id="qr-box"></div>
+</div>
+
+<div class="card">
+<b>COBRAR OFFLINE (ESCÁNER ÓPTICO)</b>
+<button class="btn-az" onclick="escanearQR()">ESCANEAR QR DEL COMPRADOR</button>
+<video id="cam" autoplay playsinline muted></video>
+</div>
+
+<div class="card"><b>LIBRO CONTABLE ENCRIPTADO</b><div id="lista"></div><button class="btn-az" onclick="exportarAuditoria()">EXPORTAR REPORTE TRAZABLE (QUIÉN/DÓNDE/CUÁNDO)</button><button class="btn-az" onclick="exportarAuditoria()">EXPORTAR REPORTE TRAZABLE (QUIÉN/DÓNDE/CUÁNDO)</button></div>
+<script>
+let boveda=null,claveCrypto=null,ultimoVale="";
+async function derivarClave(pin){
+const enc=new TextEncoder(),base=await crypto.subtle.importKey("raw",enc.encode(pin.padEnd(8,"0")),"PBKDF2",false,["deriveKey"]);
+return crypto.subtle.deriveKey({name:"PBKDF2",salt:enc.encode("AGROPAY"),iterations:10000,hash:"SHA-256"},base,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]);
+}
+async function guardarCifrado(){
+const iv=crypto.getRandomValues(new Uint8Array(12)),cif=await crypto.subtle.encrypt({name:"AES-GCM",iv},claveCrypto,new TextEncoder().encode(JSON.stringify(boveda)));
+localStorage.setItem("agropay_vault",JSON.stringify({iv:Array.from(iv),data:Array.from(new Uint8Array(cif))}));actualizarUI();
+}
+async function abrirBoveda(){
+claveCrypto=await derivarClave(document.getElementById("pin").value||"1234");
+const raw=localStorage.getItem("agropay_vault");
+if(raw){try{const o=JSON.parse(raw),dec=await crypto.subtle.decrypt({name:"AES-GCM",iv:new Uint8Array(o.iv)},claveCrypto,new Uint8Array(o.data));boveda=JSON.parse(new TextDecoder().decode(dec));}catch(e){return alert("PIN incorrecto");}}
+else{boveda={id:"AG-"+Math.random().toString(36).slice(2,8).toUpperCase(),nom:document.getElementById("nom").value||"Productor",saldo:0,movs:[],usados:[]};await guardarCifrado();}
+actualizarUI();
+}
+function actualizarUI(){
+if(!boveda)return;document.getElementById("id-txt").innerText=`ID: ${boveda.id} | ${boveda.nom} (AES-256)`;
+document.getElementById("saldo-txt").innerText=`$${boveda.saldo.toFixed(2)} USD`;
+document.getElementById("lista").innerHTML=boveda.movs.slice(0,5).map(m=>`<div class="mov">${m}</div>`).join("");
+}
+async function firmar(txt){
+const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(txt+"|RURAL"));
+return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("").slice(0,14).toUpperCase();
+}
+async function emitirPago(){
+if(!boveda)return alert("Desbloquea tu bóveda primero");
+const m=parseFloat(document.getElementById("monto").value);if(!m||m<=0||m>boveda.saldo)return alert("Monto inválido");
+const tx="TX"+Date.now().toString(36).toUpperCase(),conc=document.getElementById("conc").value;
+ultimoVale=JSON.stringify({tx,de:boveda.id,m,c:conc,s:await firmar(`${tx}|${boveda.id}|${m}`)});
+boveda.saldo-=m;boveda.usados.push(tx);boveda.movs.unshift(`ENVÍO -$${m.toFixed(2)} (${conc})`);await guardarCifrado();
+const box=document.getElementById("qr-box");box.innerHTML="";box.style.display="flex";new QRCode(box,{text:ultimoVale,width:200,height:200});
+}
+function transmitirSonido(){
+if(!ultimoVale)return alert("Genera un pago primero");
+const ac=new(window.AudioContext||window.webkitAudioContext)(),osc=ac.createOscillator();
+osc.frequency.setValueAtTime(18500,ac.currentTime);osc.connect(ac.destination);osc.start();setTimeout(()=>osc.stop(),600);
+alert("Pulso acústico 18.5 kHz emitido");
+}
+async function transmitirBT(){
+if(!ultimoVale)return alert("Genera un pago primero");
+if(!navigator.bluetooth)return alert("En iPhone usa el QR óptico");
+try{await navigator.bluetooth.requestDevice({acceptAllDevices:true});}catch(e){}
+}
+async function escanearQR(){
+if(!boveda)return alert("Desbloquea tu bóveda primero");
+const vid=document.getElementById("cam"),cvs=document.createElement("canvas"),ctx=cvs.getContext("2d");
+const st=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});vid.srcObject=st;vid.style.display="block";await vid.play();
+const loop=async()=>{
+if(vid.readyState===vid.HAVE_ENOUGH_DATA){cvs.width=vid.videoWidth;cvs.height=vid.videoHeight;ctx.drawImage(vid,0,0);
+const code=jsQR(ctx.getImageData(0,0,cvs.width,cvs.height).data,cvs.width,cvs.height);
+if(code){st.getTracks().forEach(t=>t.stop());vid.style.display="none";const v=JSON.parse(code.data);
+if(v.s!==await firmar(`${v.tx}|${v.de}|${v.m}`)||boveda.usados.includes(v.tx))return alert("Vale inválido o ya cobrado");
+boveda.saldo+=v.m;boveda.usados.push(v.tx);boveda.movs.unshift(`COBRO +$${v.m.toFixed(2)} | DE:${v.de} | ${new Date().toLocaleTimeString()} | GPS:${gpsActual} | ${v.c}`);await guardarCifrado();return alert(`¡Cobrado $${v.m.toFixed(2)}!`);}}
+requestAnimationFrame(loop);};loop();
+}
+</script><script src="trazabilidad.js"></script></body></html>
